@@ -1,0 +1,125 @@
+# GATK call SNP (gatk-4.0.8.1)
+step1 bwa mem -t 4 -R '@RG\tID:foo\tPL:illumina\tSM:15-land' Schizophyllum_commune.fna 15-land_1.fq.gz 15-land_2.fq.gz|/home/hello/software/resequence/samtools/samtools-1.9/samtools view -Sb - > 15-land.bam
+
+step2 /home/hello/software/resequence/samtools/samtools-1.9/samtools sort -@ 4 -m 4G -O bam -o 15-land.sorted.bam 15-land.bam
+
+step3 gatk MarkDuplicates -I 15-land.sorted.bam -O 15-land.sorted.markdup.bam -M 15-land.sorted.markdup_metrics.txt
+
+step4 samtools index  15-land.sorted.markdup.bam
+
+step5 gatk CreateSequenceDictionary -R Schizophyllum_commune.fna -O Schizophyllum_commune.dict
+
+step6 gatk HaplotypeCaller  -R Schizophyllum_commune.fna --emit-ref-confidence GVCF -I 15-land.sorted.markdup.bam -O 15-land.g.vcf
+
+step7 gatk CombineGVCFs -R ../ref/GCF_000143185.1_v1.0_genomic.fna -V 15R-5-F01.g.vcf -V 15R-5-ZF01.g.vcf -V ..... -O all.g.vcf
+
+step8 gatk GenotypeGVCFs -R ../15-sea/Schizophyllum_commune.fna -V 15-5-1.g.vcf -O 15-5-1.vcf
+
+#Filter：
+# Use SelectVariants，Filter SNP
+gatk SelectVariants -select-type SNP -V CFCC_7252.vcf  -O CFCC_7252.snp.vcf
+
+# VariantFiltration for SNP
+gatk VariantFiltration -V CFCC_7252.snp.vcf --filter-expression "QD < 2.0 || MQ < 40.0 || FS > 60.0 || SOR > 3.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" --filter-name "Filter" -O CFCC_7252.filter.snp.vcf
+
+# Use SelectVariants，Filter Indel
+gatk SelectVariants -select-type INDEL -V CFCC_7252.vcf -O CFCC_7252.indel.vcf
+
+# VariantFiltration for Indel
+gatk VariantFiltration  -V CFCC_7252.indel.vcf --filter-expression "QD < 2.0 || FS > 200.0 || SOR > 10.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" --filter-name "Filter"  -O CFCC_7252.filter.indel.vcf
+
+# bcftools for statistical homozygous heterozygous sites 
+bcftools stats --verbose --samples - --apply-filters "PASS,."  --fasta-ref  ../../ref.fa all.sample.filter.snp.vcf > view.stats
+
+#Annovar for SNP annotation
+step1: gtfToGenePred -genePredExt ../../../ref/ref_genome.gtf sample.genes_refGene.tmp.txt
+
+step2: awk '{print 1"\t"$0}' sample.genes_refGene.tmp.txt  > sample_refGene.txt
+
+step3: retrieve_seq_from_fasta.pl -format refGene -seqfile ../../../ref/GCF_000143185.1_v1.0_genomic.fna --outfile sample_refGeneMrna.fa sample_refGene.txt
+
+step4: mkdir -p exampledb
+
+step5: mv sample.genes_refGene.tmp.txt sample_refGene.txt sample_refGeneMrna.fa exampledb/
+
+step6: perl convert2annovar.pl -format vcf4 sample.vcf.filter > sample.avinput
+
+step7: perl annotate_variation.pl -buildver sample -dbtype refGene sample.avinput exampledb
+
+step8: less sample.avinput.variant_function|awk -F "\t" 'OFS="\t"{print $3,$4,$5,$6,$7,$1,$2}' > sample.avinput.variant_function.new
+
+step9: awk –F '\t' 'BEGIN{print "CHROM\tSTART\tEND\tREF\tALT\tANNO\tGENE(in or nearby)\tMUT_type\tMUT_info"}NR==FNR{a[$4"\t"$5"\t"$6]=$2"\t"$3; next}{if($1"\t"$2"\t"$3 in a){print $0"\t"a[$1"\t"$2"\t"$3]}else{print $0"\t.\t."}}' sample.avinput.exonic_variant_function sample.avinput.variant_function.new > sample.snp.anno.xls
+
+# PCMC for detect effective population size
+
+step1: samtools mpileup -C50 -uf  ../../ref/ref.fa 225DK.sorted.markdup.bam |bcftools call -c - |vcfutils.pl vcf2fq -d 10 -D 100 |gzip - > 225DK.fq.gz
+
+step2: /home/hello/software/resequence/PSMC/psmc-master/utils/fq2psmcfa -q20 225DK.fq.gz > 225DK.psmcfa
+
+step3: /home/hello/software/resequence/PSMC/psmc-master/psmc -N25 -t15 -r5 -p "4+25*2+4+6" -o 225DK.psmc 225DK.psmcfa
+
+step4: perl /home/hello/software/resequence/PSMC/psmc-master/utils/psmc_plot.pl -u 2e-09 -g 10 -p -M '15R-5-F01,225DK,24R-3-F01,CFCC_7252,CFCC_86625,MCCC_3A00233' combined_plot combine.psmc
+
+
+# blast 
+step1: makeblastdb -in Mcr.protein.fa -dbtype prot -title A -parse_seqids -out A
+
+step2: blastp -db A -query Schizophyllum.fa -out output  -evalue 0.00001 -max_target_seqs 5 -num_threads 4 -outfmt "6 qseqid sseqid pident qcovs length mismatch gapopen qstart qend sstart send evalue bitscore"
+
+
+# hmmscan
+step1: ./hmmer/hmmer-3.2/src/hmmscan -E 0.00001 --domE 0.00001 --cpu 2 --noali --acc --notextw --domtblout pfam.tab ./pfam/Pfam-A.hmm /mnt/j/liuxuan/blast/Schizophyllum.protein.fa
+
+
+# mummer
+
+step1: nucmer --prefix=ref_qry ref.fasta qry.fasta 
+
+step2: delta-filter -q ref_qry.delta > ref_qry.filter 
+
+step3: dnadiff -d ref_qry.filter 
+
+step4: show-coords -rcl ref_qry.delta > ref_qry.coords
+
+step5: show-aligns ref_qry.delta refname qryname > ref_qry.aligns 
+
+step6: show-tiling ref_qry.delta > ref_qry.tiling 
+
+step7: show-snps -Clr ref_qry.delta > ref_qry.snps
+
+# orthofinder to find homologous gene and estimate divergence time  
+step1：orthofinder -f data -S diamond #-f: Folder for storing protein data -S:Mapping mode
+
+step2: mafft --auto input > output
+
+step3：Gblocks proteins.fasta -t=p
+
+step4: raxmlHPC ­-f a ­-x 12345 ­-p 12345 ­-# 100 ­-m PROTGAMMALGX ­-s ex.phy ­-n ex -T 20
+
+step5: mcmctree mcmctree.ctl 
+#Set the parameter usedata = 3 in the configuration file(mcmctree.ctl), and then run the mcmctree command as above. The software will call the baseml / codeml command to calculate 
+the divergence time for each multi sequence alignment result, generate the result file rst2, and directly combine the contents of each multi sequence alignment result 
+file cat (common command of Linux system) into out.Bv documents; (2) Then put out Rename out.BV file to in BV, and set the parameter usedata = 2 in the configuration 
+file. Run the same mcmtree command again, and the program will run MCMC analysis and get the results.
+
+# PCA analysis
+step1: vcftools --vcf all.sample.new.snp.vcf --out tmp  --plink
+
+step2: plink --noweb --file tmp --make-bed --out tmp_bfile
+
+step3: gcta64 --bfile tmp_bfile --make-grm --autosome --out RESULT
+
+step4: gcta64 --grm RESULT --pca 2 --out out
+
+# pi TajimaD Fst analysis
+
+vcftools --vcf sample.vcf --TajimaD 10000 --out TajimaD
+
+vcftools --vcf sanple.vcf --window-pi 10000 --out pi
+
+vcftools --vcf sample.vcf --fst-window-size 10000 --out Fst
+
+# Detection of homologous recombination
+step1：/home/hello/software/resequence/snphylo/SNPhylo/snphylo.sh -v sample.snp.vcf
+
+step2: /home/hello/software/resequence/clonalFrameML/ClonalFrameML-master/src/ClonalFrameML snphylo.output.ml.tree snphylo.output.fasta output
